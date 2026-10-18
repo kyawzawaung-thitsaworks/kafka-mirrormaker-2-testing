@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Consumer · Kafka DR lab</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Semi+Condensed:wght@500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='lab.css') }}">
+</head>
+<body>
+<main>
+  <h1>Consumer</h1>
+  <p class="sub">Shows messages as they arrive and checks the numbers for anything missing or repeated.</p>
+
+  {% with app_name="Consumer app" %}{% include "_route.html" %}{% endwith %}
+
+  <section class="panel">
+    <div class="row">
+      <label>Topic<input id="topic" class="wide" type="text" list="topic-list" value="orders" autocomplete="off"></label>
+      <label>Consumer group<input id="group" class="wide" type="text" value="lab-ui-consumer" autocomplete="off"></label>
+      <button id="btn-start" type="button">Start reading</button>
+      <button id="btn-stop" class="quiet" type="button" disabled>Stop reading</button>
+      <button id="btn-reset" class="quiet" type="button">Clear counts</button>
+    </div>
+    <datalist id="topic-list"></datalist>
+    <div id="reading" class="msg" role="status">Not reading.</div>
+  </section>
+
+  <section class="panel">
+    <div class="figures">
+      <div class="fig"><div class="v num" id="f-received">0</div><div class="k">Received</div></div>
+      <div class="fig"><div class="v num" id="f-unique">0</div><div class="k">Different messages</div></div>
+      <div class="fig warn"><div class="v num" id="f-dups">0</div><div class="k">Duplicates</div></div>
+      <div class="fig bad"><div class="v num" id="f-missing">0</div><div class="k">Missing</div></div>
+      <div class="fig info"><div class="v num" id="f-late">0</div><div class="k">Arrived late</div></div>
+      <div class="fig"><div class="v num" id="f-lat">–</div><div class="k">Delay, avg / max (ms)</div></div>
+    </div>
+    <div id="missing-box" hidden>
+      <p class="hint">Message numbers that never arrived (counted after <span id="grace">5</span> seconds):</p>
+      <ul id="ranges" class="ranges"></ul>
+    </div>
+    <p class="hint" id="last-error"></p>
+  </section>
+
+  <section class="panel">
+    <h2>Messages as they arrive</h2>
+    <div class="legend">
+      <span><span class="pill duplicate">duplicate</span> number seen before</span>
+      <span><span class="pill late">late</span> filled a gap more than a few seconds later</span>
+      <span>Delay = time from creation to arrival here</span>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Number</th><th>Read from</th><th>Topic</th><th>Partition</th><th>Offset</th><th>Written to</th><th>Created</th><th>Delay (ms)</th><th></th></tr></thead>
+        <tbody id="rows"><tr><td colspan="9" class="hint">Start reading to see messages here.</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>What happened</h2>
+    <ul id="events" class="events"></ul>
+  </section>
+</main>
+
+<script src="{{ url_for('static', filename='lab.js') }}"></script>
+<script>
+const MAX_ROWS = 150;
+let empty = true;
+
+function rowHtml(m) {
+  const tag = m.status === "duplicate" || m.status === "late" ? `<span class="pill ${m.status}">${m.status}</span>` : "";
+  return `<tr class="${m.status}"><td>${fmt(m.seq)}</td>`
+    + `<td><span class="pill ${m.read_from}">${m.read_from}</span></td>`
+    + `<td>${esc(m.topic)}</td><td>${m.partition}</td><td>${fmt(m.offset)}</td>`
+    + `<td>${esc(m.written_to)}</td><td>${esc(m.created)}</td><td>${fmt(m.latency_ms)}</td><td>${tag}</td></tr>`;
+}
+
+function addRows(batch) {
+  const tbody = document.getElementById("rows");
+  if (empty) { tbody.innerHTML = ""; empty = false; }
+  const html = batch.slice(-MAX_ROWS).reverse().map(rowHtml).join("");
+  tbody.insertAdjacentHTML("afterbegin", html);
+  while (tbody.rows.length > MAX_ROWS) tbody.deleteRow(-1);
+}
+
+const stream = new EventSource("/api/stream");
+stream.onmessage = (e) => addRows(JSON.parse(e.data));
+
+async function refresh() {
+  const s = await api("/api/status");
+  if (!s.cluster) return;
+  renderRoute(s.cluster, "Reading from");
+  renderEvents(s.cluster.events);
+  const r = s.reader;
+  document.getElementById("f-received").textContent = fmt(r.received);
+  document.getElementById("f-unique").textContent = fmt(r.unique);
+  document.getElementById("f-dups").textContent = fmt(r.duplicates);
+  document.getElementById("f-missing").textContent = fmt(r.missing);
+  document.getElementById("f-late").textContent = fmt(r.late);
+  document.getElementById("f-lat").textContent = r.latency_avg === null ? "–" : `${fmt(r.latency_avg)} / ${fmt(r.latency_max)}`;
+  document.getElementById("grace").textContent = r.grace;
+  document.getElementById("btn-start").disabled = r.running;
+  document.getElementById("btn-stop").disabled = !r.running;
+  document.getElementById("last-error").textContent = r.last_error ? `Last problem: ${r.last_error}` : "";
+
+  const box = document.getElementById("missing-box");
+  box.hidden = r.missing === 0;
+  let items = r.missing_ranges.map(([a, b]) => `<li>${a === b ? fmt(a) : `${fmt(a)} to ${fmt(b)} (${fmt(b - a + 1)} messages)`}</li>`);
+  if (r.missing_range_count > r.missing_ranges.length) items.unshift(`<li>…and ${r.missing_range_count - r.missing_ranges.length} earlier ranges</li>`);
+  document.getElementById("ranges").innerHTML = items.join("");
+
+  const rd = r.reading;
+  document.getElementById("reading").textContent = rd
+    ? `Reading ${rd.topics.join(" and ")} on the ${rd.cluster}, as group ${rd.group}, since ${rd.since}.`
+    : (r.running ? "Connecting…" : "Not reading.");
+}
+
+document.getElementById("btn-start").onclick = async () => {
+  const r = await api("/api/start", { topic: document.getElementById("topic").value.trim(), group: document.getElementById("group").value.trim() });
+  if (!r.ok) document.getElementById("reading").textContent = r.message;
+  refresh();
+};
+document.getElementById("btn-stop").onclick = async () => { await api("/api/stop", {}); refresh(); };
+document.getElementById("btn-reset").onclick = async () => {
+  await api("/api/reset", {});
+  document.getElementById("rows").innerHTML = "";
+  refresh();
+};
+
+wireRouteControls(refresh);
+loadTopicList("topic-list");
+refresh();
+setInterval(() => refresh().catch(showOffline), 1000);
+</script>
+</body>
+</html>

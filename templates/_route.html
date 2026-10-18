@@ -1,0 +1,27 @@
+<section id="route" class="route" data-active="primary" aria-label="Which Kafka cluster the app is using">
+  <div class="site" data-site="primary">
+    <div class="name">Primary</div>
+    <div class="host"></div>
+    <div class="health"><span class="dot"></span><span class="state">Checking…</span></div>
+    <div class="tag"></div>
+  </div>
+  <div class="link" aria-hidden="true">
+    <span class="track left"></span>
+    <span class="app-node">{{ app_name }}</span>
+    <span class="track right"></span>
+  </div>
+  <div class="site" data-site="backup">
+    <div class="name">Backup</div>
+    <div class="host"></div>
+    <div class="health"><span class="dot"></span><span class="state">Checking…</span></div>
+    <div class="tag"></div>
+  </div>
+</section>
+<div class="route-foot">
+  <div id="say" class="say" role="status" aria-live="polite">Checking clusters…</div>
+  <div class="controls-inline">
+    <label class="check"><input type="checkbox" id="auto" checked> Automatic failover</label>
+    <button id="btn-failover" class="danger" type="button">Fail over now</button>
+    <button id="btn-failback" class="quiet" type="button" disabled>Switch back to primary</button>
+  </div>
+</div>

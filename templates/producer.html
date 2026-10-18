@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Producer · Kafka DR lab</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Semi+Condensed:wght@500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='lab.css') }}">
+</head>
+<body>
+<main>
+  <h1>Producer</h1>
+  <p class="sub">Writes numbered messages, so the consumer can spot anything missing or repeated after a failover.</p>
+
+  {% with app_name="Producer app" %}{% include "_route.html" %}{% endwith %}
+
+  <div class="grid">
+    <div class="stack">
+      <section class="panel">
+        <h2>Create a topic</h2>
+        <div class="row">
+          <label>Topic name<input id="new-topic" class="wide" type="text" value="orders" autocomplete="off"></label>
+          <label>Partitions<input id="new-parts" class="narrow" type="number" min="1" max="50" value="3"></label>
+          <button id="btn-create" type="button">Create topic</button>
+        </div>
+        <p class="hint" id="copy-hint">Creates the topic on the primary, and on the backup so there is somewhere to write after a failover.</p>
+        <div id="create-msg" class="msg" role="status"></div>
+      </section>
+
+      <section class="panel">
+        <h2>Generate messages</h2>
+        <div class="row">
+          <label>Topic<input id="topic" class="wide" type="text" list="topic-list" value="orders" autocomplete="off"></label>
+          <label>Messages per second<input id="rate" class="narrow" type="number" min="1" max="5000" value="20"></label>
+        </div>
+        <datalist id="topic-list"></datalist>
+        <div class="row" style="margin-top:12px">
+          <button id="btn-start" type="button">Start generating</button>
+          <button id="btn-stop" class="quiet" type="button" disabled>Stop generating</button>
+        </div>
+        <div id="gen-msg" class="msg" role="status"></div>
+      </section>
+    </div>
+
+    <div class="stack">
+      <section class="panel">
+        <h2>Messages written</h2>
+        <div class="figures">
+          <div class="fig"><div class="v num" id="f-generated">0</div><div class="k">Generated</div></div>
+          <div class="fig"><div class="v num" id="f-primary">0</div><div class="k">Confirmed by primary</div></div>
+          <div class="fig warn"><div class="v num" id="f-backup">0</div><div class="k">Confirmed by backup</div></div>
+          <div class="fig info"><div class="v num" id="f-resent">0</div><div class="k">Sent again after a switch or error</div></div>
+          <div class="fig"><div class="v num" id="f-waiting">0</div><div class="k">Waiting for confirmation</div></div>
+          <div class="fig"><div class="v num" id="f-last">–</div><div class="k">Last message number</div></div>
+        </div>
+        <p class="hint" id="last-error"></p>
+      </section>
+
+      <section class="panel">
+        <h2>Mirror lag for <span id="lag-topic">–</span></h2>
+        <div class="figures">
+          <div class="fig"><div class="v num" id="m-primary">–</div><div class="k">In the primary</div></div>
+          <div class="fig"><div class="v num" id="m-copied">–</div><div class="k" id="m-copied-label">Copied to the backup</div></div>
+          <div class="fig warn"><div class="v num" id="m-lag">–</div><div class="k">Not copied yet (lag)</div></div>
+          <div class="fig" id="m-local-fig"><div class="v num" id="m-local">–</div><div class="k">Written to the backup directly</div></div>
+        </div>
+        <div class="lagbar" aria-hidden="true"><div id="lag-bar"></div></div>
+        <p class="hint" id="lag-note">Updated every 2 seconds.</p>
+      </section>
+    </div>
+  </div>
+
+  <section class="panel" style="margin-top:16px">
+    <h2>What happened</h2>
+    <ul id="events" class="events"></ul>
+  </section>
+</main>
+
+<script src="{{ url_for('static', filename='lab.js') }}"></script>
+<script>
+let maxLag = 1;
+
+async function refresh() {
+  const s = await api("/api/status");
+  if (!s.cluster) return;
+  renderRoute(s.cluster, "Writing to");
+  renderEvents(s.cluster.events);
+  const same = s.cluster.same_names;
+  document.getElementById("copy-hint").textContent = same
+    ? "Creates the topic on the primary and on the backup, with the same name. MirrorMaker copies into the backup topic, and the producer writes to it after a failover."
+    : `Creates the topic on the primary, and on the backup so there is somewhere to write after a failover. MirrorMaker creates the copy (${s.cluster.primary_alias}.name) by itself.`;
+  document.getElementById("m-local-fig").hidden = same;
+  document.getElementById("m-copied-label").textContent = same ? "In the backup" : "Copied to the backup";
+
+  const g = s.generator, st = g.stats;
+  document.getElementById("f-generated").textContent = fmt(st.generated);
+  document.getElementById("f-primary").textContent = fmt(st.delivered_primary);
+  document.getElementById("f-backup").textContent = fmt(st.delivered_backup);
+  document.getElementById("f-resent").textContent = fmt(st.resent);
+  document.getElementById("f-waiting").textContent = fmt(g.waiting);
+  document.getElementById("f-last").textContent = g.last_seq ? fmt(g.last_seq) : "–";
+  document.getElementById("last-error").textContent = g.last_error ? `Last error: ${g.last_error}` : "";
+  document.getElementById("btn-start").disabled = g.running;
+  document.getElementById("btn-stop").disabled = !g.running;
+  document.getElementById("gen-msg").textContent = g.running
+    ? `Writing to ${g.topic} at ${g.rate} messages per second, since ${g.started_at}.` : "Stopped.";
+
+  const m = s.mirror || {};
+  document.getElementById("lag-topic").textContent = m.topic || "–";
+  document.getElementById("m-primary").textContent = m.primary === null && m.primary_last ? `${fmt(m.primary_last[0])}*` : fmt(m.primary);
+  document.getElementById("m-copied").textContent = fmt(m.copied);
+  const lag = (m.lag !== null && m.lag !== undefined && m.lag >= 0) ? m.lag : null;
+  document.getElementById("m-lag").textContent = fmt(lag);
+  document.getElementById("m-local").textContent = fmt(m.backup_local);
+  if (lag !== null) maxLag = Math.max(maxLag, lag);
+  document.getElementById("lag-bar").style.width = lag ? `${Math.min(100, (lag / maxLag) * 100)}%` : "0";
+  const rate = document.getElementById("rate");
+  if (g.running && document.activeElement !== rate) rate.value = g.rate;
+  let note = `Updated every 2 seconds${m.time ? `, last at ${m.time}` : ""}.`;
+  if (m.warning) note = m.warning;
+  else if (m.lag < 0 && same && s.cluster.active === "backup") note = "The backup has more messages than the primary, because the producer is writing to the backup now. Lag only makes sense before a failover.";
+  else if (m.lag < 0) note = `The backup has more messages than the primary, so lag can't be worked out. `
+    + `This happens when the topic was deleted and created again on the primary, or when something writes to the backup topic. Use a new topic name.`;
+  else if (m.topic && m.primary === null) note = m.primary_last
+    ? `* The primary is not answering. ${fmt(m.primary_last[0])} is the last count, from ${m.primary_last[1]}.`
+    : "The primary is not answering, or the topic does not exist there.";
+  else if (m.topic && m.copied === null) note = `${m.remote_topic} is not on the backup yet. Check that MirrorMaker is running.`;
+  document.getElementById("lag-note").textContent = note;
+}
+
+document.getElementById("btn-create").onclick = async () => {
+  const name = document.getElementById("new-topic").value.trim();
+  const out = document.getElementById("create-msg");
+  out.textContent = "Creating…";
+  const r = await api("/api/topic", { name, partitions: Number(document.getElementById("new-parts").value) });
+  out.textContent = r.message || "";
+  document.getElementById("topic").value = name;
+  loadTopicList("topic-list");
+  refresh();
+};
+document.getElementById("btn-start").onclick = async () => {
+  const r = await api("/api/start", { topic: document.getElementById("topic").value.trim(), rate: Number(document.getElementById("rate").value) });
+  document.getElementById("gen-msg").textContent = r.message || "";
+  maxLag = 1;
+  refresh();
+};
+document.getElementById("btn-stop").onclick = async () => { await api("/api/stop", {}); refresh(); };
+document.getElementById("topic").onchange = (e) => api("/api/watch", { topic: e.target.value.trim() });
+
+wireRouteControls(refresh);
+loadTopicList("topic-list");
+api("/api/watch", { topic: document.getElementById("topic").value.trim() });
+refresh();
+setInterval(() => refresh().catch(showOffline), 1000);
+</script>
+</body>
+</html>
