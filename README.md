@@ -42,13 +42,16 @@ new VMs: Java, Kafka 4.1.0 in `~/kafka`, a single-node `config/lab.properties` a
 `mm2.properties` already set up for the lab (one direction only, same topic names, consumer
 bookmarks copied).
 
-**a) Copy the bundle to both VMs (in Cloud Shell).** Upload `kafka-dr-lab.tar.gz` with
-**⋮ (More) → Upload**, then:
+**a) Get the code from GitHub, on both VMs:**
 
 ```bash
-gcloud compute scp kafka-dr-lab.tar.gz kafka:~
-gcloud compute scp kafka-dr-lab.tar.gz kafka-backup:~
+sudo apt-get install -y git      # if git is missing
+git clone https://github.com/kyawzawaung-thitsaworks/kafka-mirrormaker-2-testing.git
 ```
+
+The VMs need internet access to reach GitHub (a public IP or Cloud NAT). If the repo is private,
+`git clone` asks for your GitHub user name and a personal access token (not your password).
+To get later changes: `cd ~/kafka-mirrormaker-2-testing && git pull`.
 
 Port 9092 must be allowed from kafka-backup to kafka, so MirrorMaker and the apps can reach the
 primary.
@@ -56,8 +59,7 @@ primary.
 **b) On kafka** (first):
 
 ```bash
-tar -xzf kafka-dr-lab.tar.gz
-cd kafka-dr-lab
+cd ~/kafka-mirrormaker-2-testing
 ./setup.sh primary
 ```
 
@@ -66,8 +68,7 @@ It ends with `Setup done.` and Kafka running on port 9092.
 **c) On kafka-backup:**
 
 ```bash
-tar -xzf kafka-dr-lab.tar.gz
-cd kafka-dr-lab
+cd ~/kafka-mirrormaker-2-testing
 ./setup.sh backup
 ```
 
@@ -141,23 +142,24 @@ bin/kafka-topics.sh --bootstrap-server kafka-backup:9092 --list
 You should see `namecheck` on the backup, **not** `primary.namecheck`. You'll still see
 `primary.heartbeats`: heartbeats keep the prefix so you can tell which cluster they came from.
 
-## 2. Copy the bundle to kafka-backup
+## 2. Get the code on kafka-backup
 
-In **Cloud Shell**: click **⋮ (More) → Upload** and upload `kafka-dr-lab.tar.gz`. Then:
+If you did step 0, this is already done. Otherwise, **on kafka-backup:**
 
 ```bash
-gcloud compute scp kafka-dr-lab.tar.gz kafka-backup:~
-gcloud compute ssh kafka-backup
+sudo apt-get install -y git      # if git is missing
+git clone https://github.com/kyawzawaung-thitsaworks/kafka-mirrormaker-2-testing.git
 ```
+
+See step 0a if the VM can't reach GitHub or the repo is private.
 
 ## 3. Set up the apps (once)
 
-**On kafka-backup:**
+If you did step 0, this is already done. Otherwise, **on kafka-backup:**
 
 ```bash
-tar -xzf kafka-dr-lab.tar.gz
-cd kafka-dr-lab
-./setup.sh
+cd ~/kafka-mirrormaker-2-testing
+./setup.sh apps
 ```
 
 Check `lab.env`. The defaults match the lab: `kafka:9092`, `kafka-backup:9092`, alias `primary`,
