@@ -12,7 +12,8 @@ Everything runs on **kafka-backup**, next to MirrorMaker.
 | `lag-test.sh` | Measures MirrorMaker lag (`measure`) or shows it live (`watch`) |
 | `slow-link.sh` | Simulates a slow network between the sites, so lag builds up |
 | `lab.env` | Settings: Kafka addresses, topic naming, failover timing, ports |
-| `setup.sh`, `run.sh` | Install, then start, stop and check the apps |
+| `setup.sh` | Installs Kafka on kafka (`primary`); Kafka, MirrorMaker and the apps on kafka-backup (`backup`) |
+| `run.sh` | Starts, stops and checks the apps |
 
 ## How it works
 
@@ -34,7 +35,65 @@ The apps also support MirrorMaker's default naming (`orders` → `primary.orders
 `REPLICATION_POLICY="default"` in `lab.env` if you keep that. The setting must always match
 MirrorMaker's.
 
+## 0. Install Kafka and MirrorMaker 
+
+Skip this if Kafka and MirrorMaker are already running on your VMs. `setup.sh` installs them on
+new VMs: Java, Kafka 4.1.0 in `~/kafka`, a single-node `config/lab.properties` and, on the backup,
+`mm2.properties` already set up for the lab (one direction only, same topic names, consumer
+bookmarks copied).
+
+**a) Copy the bundle to both VMs (in Cloud Shell).** Upload `kafka-dr-lab.tar.gz` with
+**⋮ (More) → Upload**, then:
+
+```bash
+gcloud compute scp kafka-dr-lab.tar.gz kafka:~
+gcloud compute scp kafka-dr-lab.tar.gz kafka-backup:~
+```
+
+Port 9092 must be allowed from kafka-backup to kafka, so MirrorMaker and the apps can reach the
+primary.
+
+**b) On kafka** (first):
+
+```bash
+tar -xzf kafka-dr-lab.tar.gz
+cd kafka-dr-lab
+./setup.sh primary
+```
+
+It ends with `Setup done.` and Kafka running on port 9092.
+
+**c) On kafka-backup:**
+
+```bash
+tar -xzf kafka-dr-lab.tar.gz
+cd kafka-dr-lab
+./setup.sh backup
+```
+
+This installs Kafka, writes `mm2.properties`, starts MirrorMaker and sets up the apps.
+
+**d) Check it (on kafka-backup)**, about 30 seconds later:
+
+```bash
+cd ~/kafka
+bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --topic namecheck --partitions 3 --replication-factor 1
+sleep 20
+bin/kafka-topics.sh --bootstrap-server kafka-backup:9092 --list
+```
+
+You should see `namecheck` and `primary.heartbeats` on the backup. If not, look at
+`tail -30 ~/kafka/mm2.log`.
+
+Running `setup.sh` again is safe: anything already installed, configured or running is kept.
+To use another Kafka version: `KAFKA_VERSION=4.1.0 ./setup.sh primary`. If your VMs have other
+names, add `PRIMARY_VM=... BACKUP_VM=...` in front, and change the addresses in `lab.env` to match.
+
+After this, steps 1 to 3 are already done. Continue with step 4.
+
 ## 1. Set MirrorMaker to keep the same topic names (once)
+
+If you installed with `./setup.sh backup` (step 0), this is already done. Skip to step 4.
 
 **Start fresh.** MirrorMaker remembers how far it has copied each topic. If you only change the
 setting, the new same-name copies start from where the old copies stopped, and older messages
